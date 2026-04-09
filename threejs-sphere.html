@@ -1,0 +1,1336 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Three.js 弹跳球</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #4466aa; overflow: hidden; font-family: sans-serif; }
+    canvas { display: block; }
+    #gameover {
+      display: none;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: #333333;
+      border: 4px solid #ff6666;
+      border-radius: 20px;
+      padding: 40px 60px;
+      text-align: center;
+      color: #ff8888;
+      z-index: 1000;
+    }
+    #gameover h2 {
+      font-size: 48px;
+      margin: 0 0 20px 0;
+      color: #ff8888;
+      text-shadow: 0 0 10px rgba(255, 0, 0, 0.3);
+    }
+    #gameover p {
+      font-size: 18px;
+      margin: 0 0 30px 0;
+      color: #ff6666;
+    }
+    #restartBtn {
+      background: #ff6666;
+      color: #333333;
+      border: none;
+      padding: 15px 50px;
+      font-size: 20px;
+      border-radius: 30px;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    #restartBtn:hover {
+      transform: scale(1.1);
+      box-shadow: 0 0 30px rgba(255, 100, 100, 0.5);
+    }
+    #startOverlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(255,255,255,0.15);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      z-index: 2000;
+      cursor: pointer;
+    }
+    #startOverlay span {
+      color: rgba(255, 0, 0, 0.8);
+      font-size: 28px;
+      text-shadow: 0 0 20px rgba(255, 0, 0, 0.3);
+    }
+  </style>
+</head>
+<body>
+  <div id="gameover">
+    <h2>Game Over</h2>
+    <p>颜色不匹配！</p>
+    <button id="restartBtn">重新开始</button>
+  </div>
+  <div id="startOverlay">
+    <span>点击开始游戏</span>
+  </div>
+
+  <script type="importmap">
+    { "imports": { "three": "./three.module.js", "three/addons/": "./" } }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+
+    // ═══════════════════════════════════════════════════════════════
+    //  背景音乐合成器（Web Audio API）
+    // ═══════════════════════════════════════════════════════════════
+    let audioCtx = null;
+    let musicPlaying = false;
+    let masterGain = null;
+
+    function initAudio() {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      masterGain = audioCtx.createGain();
+      masterGain.gain.value = 0.3;
+      masterGain.connect(audioCtx.destination);
+      musicPlaying = true;
+    }
+
+    // 将音符名转换为频率
+    function noteToFreq(note) {
+      const notes = {
+        'C4': 261.63, 'D4': 293.66, 'E4': 329.63, 'F4': 349.23,
+        'G4': 392.00, 'A4': 440.00, 'B4': 493.88, 'C5': 523.25,
+        'D5': 587.33, 'E5': 659.25, 'G5': 783.99, 'A5': 880.00,
+        'C3': 130.81, 'E3': 164.81, 'G3': 196.00, 'A3': 220.00
+      };
+      return notes[note] || 440;
+    }
+
+    // 播放一个音符
+    function playNote(freq, startTime, duration, type = 'sine', gainValue = 0.2) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+
+      osc.type = type;
+      osc.frequency.value = freq;
+
+      gain.gain.setValueAtTime(0, startTime);
+      gain.gain.linearRampToValueAtTime(gainValue, startTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+
+      osc.connect(gain);
+      gain.connect(masterGain);
+
+      osc.start(startTime);
+      osc.stop(startTime + duration);
+    }
+
+    // 播放鼓点
+    function playKick(startTime) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(150, startTime);
+      osc.frequency.exponentialRampToValueAtTime(30, startTime + 0.1);
+
+      gain.gain.setValueAtTime(0.4, startTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.15);
+
+      osc.connect(gain);
+      gain.connect(masterGain);
+
+      osc.start(startTime);
+      osc.stop(startTime + 0.15);
+    }
+
+    // 播放轻快的打击乐
+    function playHiHat(startTime) {
+      const bufferSize = audioCtx.sampleRate * 0.05;
+      const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+      const data = buffer.getChannelData(0);
+
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufferSize, 3);
+      }
+
+      const source = audioCtx.createBufferSource();
+      const filter = audioCtx.createBiquadFilter();
+      const gain = audioCtx.createGain();
+
+      source.buffer = buffer;
+      filter.type = 'highpass';
+      filter.frequency.value = 8000;
+
+      gain.gain.value = 0.1;
+
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(masterGain);
+
+      source.start(startTime);
+    }
+
+    // 主循环：播放一段有节奏感的音乐
+    function playMusicLoop() {
+      if (!musicPlaying || !audioCtx) return;
+
+      const BPM = 120;
+      const beatDuration = 60 / BPM; // 每拍的时长（秒）
+      const barDuration = beatDuration * 4; // 一小节的时长
+
+      // 多种旋律变奏
+      const melodyPatterns = [
+        // 变奏1
+        [
+          { note: 'E4', beat: 0, dur: 0.5 },
+          { note: 'G4', beat: 0.5, dur: 0.5 },
+          { note: 'A4', beat: 1, dur: 0.5 },
+          { note: 'B4', beat: 1.5, dur: 0.5 },
+          { note: 'A4', beat: 2, dur: 1 },
+          { note: 'G4', beat: 3, dur: 0.5 },
+          { note: 'E4', beat: 3.5, dur: 0.5 },
+          { note: 'D4', beat: 4, dur: 0.5 },
+          { note: 'E4', beat: 4.5, dur: 0.5 },
+          { note: 'G4', beat: 5, dur: 1 },
+          { note: 'A4', beat: 6, dur: 0.5 },
+          { note: 'G4', beat: 6.5, dur: 0.5 },
+          { note: 'E4', beat: 7, dur: 1 }
+        ],
+        // 变奏2：上行
+        [
+          { note: 'C4', beat: 0, dur: 0.5 },
+          { note: 'D4', beat: 0.5, dur: 0.5 },
+          { note: 'E4', beat: 1, dur: 0.5 },
+          { note: 'F4', beat: 1.5, dur: 0.5 },
+          { note: 'G4', beat: 2, dur: 1 },
+          { note: 'A4', beat: 3, dur: 0.5 },
+          { note: 'B4', beat: 3.5, dur: 0.5 },
+          { note: 'C5', beat: 4, dur: 1 },
+          { note: 'B4', beat: 5, dur: 0.5 },
+          { note: 'A4', beat: 5.5, dur: 0.5 },
+          { note: 'G4', beat: 6, dur: 1 },
+          { note: 'E4', beat: 7, dur: 1 }
+        ],
+        // 变奏3：跳跃
+        [
+          { note: 'G4', beat: 0, dur: 0.5 },
+          { note: 'E4', beat: 0.5, dur: 0.5 },
+          { note: 'C4', beat: 1, dur: 0.5 },
+          { note: 'D4', beat: 1.5, dur: 0.5 },
+          { note: 'E4', beat: 2, dur: 0.5 },
+          { note: 'G4', beat: 2.5, dur: 0.5 },
+          { note: 'A4', beat: 3, dur: 0.5 },
+          { note: 'B4', beat: 3.5, dur: 0.5 },
+          { note: 'A4', beat: 4, dur: 0.5 },
+          { note: 'G4', beat: 4.5, dur: 0.5 },
+          { note: 'E4', beat: 5, dur: 1 },
+          { note: 'D4', beat: 6, dur: 0.5 },
+          { note: 'C4', beat: 6.5, dur: 0.5 },
+          { note: 'D4', beat: 7, dur: 0.5 },
+          { note: 'E4', beat: 7.5, dur: 0.5 }
+        ],
+        // 变奏4：长音
+        [
+          { note: 'E4', beat: 0, dur: 2 },
+          { note: 'G4', beat: 2, dur: 2 },
+          { note: 'A4', beat: 4, dur: 1.5 },
+          { note: 'G4', beat: 5.5, dur: 0.5 },
+          { note: 'E4', beat: 6, dur: 2 }
+        ]
+      ];
+
+      // 和弦进行（只用一种）
+      const chordPattern = [
+        { notes: ['C3', 'E3', 'G3'], beat: 0 },
+        { notes: ['A3', 'C4', 'E4'], beat: 2 },
+        { notes: ['F3', 'A3', 'C4'], beat: 4 },
+        { notes: ['G3', 'B3', 'D4'], beat: 6 }
+      ];
+
+      // 贝斯线
+      const bassLines = [
+        [{ note: 'C3', beat: 0 }, { note: 'C3', beat: 2 }, { note: 'C3', beat: 3 }, { note: 'C3', beat: 4 }, { note: 'C3', beat: 6 }],
+        [{ note: 'G3', beat: 0 }, { note: 'G3', beat: 1 }, { note: 'G3', beat: 2 }, { note: 'G3', beat: 3 }, { note: 'G3', beat: 4 }, { note: 'G3', beat: 5 }, { note: 'G3', beat: 6 }, { note: 'G3', beat: 7 }],
+        [{ note: 'F3', beat: 0 }, { note: 'F3', beat: 2 }, { note: 'F3', beat: 4 }, { note: 'F3', beat: 6 }]
+      ];
+
+      const startTime = audioCtx.currentTime;
+
+      // 播放16小节的循环
+      for (let bar = 0; bar < 16; bar++) {
+        const barStart = startTime + bar * barDuration;
+
+        // 选择当前小节的旋律变奏和贝斯线
+        const melodyPattern = melodyPatterns[bar % melodyPatterns.length];
+        const bassPattern = bassLines[bar % bassLines.length];
+
+        // 播放贝斯线
+        bassPattern.forEach(bass => {
+          const bassTime = barStart + bass.beat * beatDuration;
+          playNote(noteToFreq(bass.note), bassTime, beatDuration * 0.8, 'sine', 0.15);
+        });
+
+        // 播放和弦（高音垫底）
+        chordPattern.forEach(chord => {
+          const chordTime = barStart + chord.beat * beatDuration;
+          chord.notes.forEach(n => {
+            playNote(noteToFreq(n), chordTime, beatDuration * 1.8, 'sine', 0.08);
+          });
+        });
+
+        // 播放旋律
+        melodyPattern.forEach(m => {
+          const noteTime = barStart + m.beat * beatDuration;
+          playNote(noteToFreq(m.note), noteTime, m.dur * beatDuration * 0.9, 'triangle', 0.18);
+        });
+
+        // 鼓点：每拍一个底鼓
+        for (let beat = 0; beat < 8; beat++) {
+          playKick(barStart + beat * beatDuration);
+        }
+
+        // 轻拍：8分音符的hi-hat
+        for (let beat = 0; beat < 16; beat++) {
+          if (beat % 2 === 1) {
+            playHiHat(barStart + beat * beatDuration * 0.5);
+          }
+        }
+
+        // 在第8小节和第16小节添加一个特殊音效
+        if ((bar + 1) % 8 === 0) {
+          playNote(880, barStart + 4 * beatDuration, beatDuration * 2, 'sine', 0.1);
+          playNote(1100, barStart + 4.5 * beatDuration, beatDuration * 1.5, 'sine', 0.08);
+        }
+      }
+
+      // 循环播放
+      setTimeout(playMusicLoop, barDuration * 16 * 1000);
+    }
+
+    // 点击开始游戏
+    document.getElementById('startOverlay').addEventListener('click', () => {
+      document.getElementById('startOverlay').style.display = 'none';
+      initAudio();
+      playMusicLoop();
+      gameStarted = true;
+    });
+
+    // GameOver时暂停音乐
+    function pauseMusic() {
+      if (masterGain) {
+        masterGain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.3);
+      }
+    }
+
+    // 重新开始时恢复音乐
+    function resumeMusic() {
+      if (masterGain) {
+        masterGain.gain.linearRampToValueAtTime(0.3, audioCtx.currentTime + 0.3);
+      }
+    }
+
+    // ── Scene ──────────────────────────────────────────────
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x050510);
+    scene.fog = new THREE.FogExp2(0x050510, 0.012);
+
+    // ── Camera ─────────────────────────────────────────────
+    const camera = new THREE.PerspectiveCamera(65, innerWidth / innerHeight, 0.1, 300);
+    camera.position.set(0, 5, 20);
+    camera.lookAt(0, 0, 0);
+
+    // ── Renderer ────────────────────────────────────────────
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(devicePixelRatio);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 2.0;
+    document.body.appendChild(renderer.domElement);
+
+    // ── Lights ─────────────────────────────────────────────
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+    scene.add(ambientLight);
+    const mainLight = new THREE.DirectionalLight(0xffffff, 3.5);
+    mainLight.position.set(5, 8, 5);
+    scene.add(mainLight);
+    const fillLight = new THREE.PointLight(0x88ccff, 5, 30);
+    fillLight.position.set(-4, 2, -3);
+    scene.add(fillLight);
+    const backLight = new THREE.PointLight(0xffaacc, 4, 25);
+    backLight.position.set(0, -5, -4);
+    scene.add(backLight);
+    // 额外的顶光增强
+    const topLight = new THREE.PointLight(0xffffff, 3, 20);
+    topLight.position.set(0, 10, 0);
+    scene.add(topLight);
+
+    // ── 物理参数 ───────────────────────────────────────────
+    const GRAVITY = -30;
+    const BOUNCE_VEL = 15;
+    const T_FALL = BOUNCE_VEL / Math.abs(GRAVITY); // = 0.5s
+    const TOTAL_PERIOD = 2 * T_FALL; // = 1.0s
+
+    // ── 轨道颜色 ──────────────────────────────────────────
+    const COLOR_PINK = 0xFF5BAC;   // 较高饱和度粉色
+    const COLOR_YELLOW = 0xFFD000; // 较高饱和度黄色
+    const COLOR_BLUE = 0x33BBFF;   // 较高饱和度蓝色
+    const COLOR_GREEN = 0x33FF77;  // 较高饱和度绿色
+    const COLOR_ORANGE = 0xFF7733; // 较高饱和度橙色
+    const MAIN_COLORS = [COLOR_PINK, COLOR_YELLOW, COLOR_BLUE, COLOR_GREEN, COLOR_ORANGE];
+
+    // ── 轨道参数 ──────────────────────────────────────────
+    const ROAD_WIDTH = 5;
+    const ROAD_TILE_LEN = 2;
+    const ROAD_TILE_HEIGHT = 0.3;
+    const DESPAWN_Z = -30;
+    const VELZ = 10;
+    const SEGMENT_SPACING = VELZ * TOTAL_PERIOD; // 10，每个Segment的跨度
+    const INIT_SEGMENTS = 15;
+    // X轴方向的小砖块宽度（用于切割）
+    const SMALL_WIDTH = ROAD_WIDTH / 3; // 把整块轨道切成3份
+    const TILE_GAP_X = 0.8; // X轴方向砖块间隔（三块轨道用）
+    const DOUBLE_GAP = 2.0; // 双块轨道时两块的间距（更大间隙）
+
+    // ── 鼠标控制参数 ─────────────────────────────────────
+    const MOUSE_SENSITIVITY = 15;  // 鼠标灵敏度：值越大移动范围越大
+    let normalizedMouseX = 0;        // 归一化鼠标X位置（-1 到 1）
+    let targetPosX = 0;              // 球的目标X位置
+    const POS_X_SMOOTHING = 0.15;   // X位置平滑系数：值越小越平滑
+
+    // ── 游戏状态变量（提前声明，供初始化代码使用）──────────
+    let isGameOver = false;
+    let gameStarted = false; // 标记游戏是否已开始
+    let ballColor = 0xffaa44; // 球的当前颜色
+    let currentActiveColor = COLOR_PINK; // 当前"活性颜色"，由最近的长直轨道决定
+    let pendingColor = COLOR_PINK; // 待生效的颜色（下一个TRIPLE/DOUBLE使用）
+    let lastSegmentType = 0; // 上一个轨道类型，用于避免连续相同
+    let consecutiveTypeCount = 0; // 连续相同类型的计数
+    let lastLongColor = 0; // 上一个LONG轨道的颜色，用于避免连续相同颜色
+
+    // 轨道类型
+    const SEGMENT_TYPES = {
+      LONG: 1,   // 长直轨道
+      TRIPLE: 2, // 三块间隔
+      DOUBLE: 3  // 两块间隔
+    };
+
+    // 存储所有Segment
+    const segments = [];
+    const allTiles = [];
+
+    // 创建圆角矩形的辅助函数
+    function createRoundedRectShape(width, height, radius) {
+      const shape = new THREE.Shape();
+      const x = -width / 2;
+      const y = -height / 2;
+
+      shape.moveTo(x + radius, y);
+      shape.lineTo(x + width - radius, y);
+      shape.quadraticCurveTo(x + width, y, x + width, y + radius);
+      shape.lineTo(x + width, y + height - radius);
+      shape.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+      shape.lineTo(x + radius, y + height);
+      shape.quadraticCurveTo(x, y + height, x, y + height - radius);
+      shape.lineTo(x, y + radius);
+      shape.quadraticCurveTo(x, y, x + radius, y);
+
+      return shape;
+    }
+
+    // 创建单个tile（圆润光斑）
+    function createTile(offsetX, offsetZ, width, color) {
+      // 使用更大的圆角和更平滑的倒角
+      const shape = createRoundedRectShape(width, ROAD_TILE_LEN, 0.3);
+      const extrudeSettings = {
+        steps: 1,
+        depth: ROAD_TILE_HEIGHT,
+        bevelEnabled: true,
+        bevelThickness: 0.08,
+        bevelSize: 0.08,
+        bevelSegments: 4
+      };
+      const tileGeo = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+      tileGeo.rotateX(-Math.PI / 2);
+      tileGeo.translate(0, ROAD_TILE_HEIGHT / 2, 0);
+
+      const tileMat = new THREE.MeshStandardMaterial({
+        color: color,
+        metalness: 0.15,
+        roughness: 0.3,
+        emissive: color,
+        emissiveIntensity: 0.25
+      });
+      const tile = new THREE.Mesh(tileGeo, tileMat);
+      tile.userData.offsetX = offsetX;
+      tile.userData.offsetZ = offsetZ;
+      tile.userData.width = width;
+      tile.userData.baseY = -0.65;
+      tile.userData.animY = 0;
+      tile.userData.animScale = 1;
+      tile.position.set(offsetX, -0.65, offsetZ);
+      scene.add(tile);
+      return tile;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  方块涟漪动画系统
+    // ═══════════════════════════════════════════════════════════════
+    let rippleAnimations = [];
+
+    function triggerRipple(landedTile, landedSegment) {
+      // 为同一segment的所有tile添加涟漪动画
+      landedSegment.tiles.forEach((tile, index) => {
+        const distFromCenter = Math.abs(tile.position.x - landedTile.position.x);
+        const delay = distFromCenter * 0.03; // 延迟根据距离
+
+        rippleAnimations.push({
+          tile: tile,
+          startTime: clock.getElapsedTime() + delay,
+          duration: 0.4,
+          isCenter: tile === landedTile,
+          startX: tile.position.x,
+          startScale: 1
+        });
+      });
+    }
+
+    function updateRipples(currentTime) {
+      rippleAnimations = rippleAnimations.filter(ripple => {
+        if (currentTime < ripple.startTime) return true;
+
+        const elapsed = currentTime - ripple.startTime;
+        const progress = Math.min(elapsed / ripple.duration, 1);
+
+        if (ripple.isCenter) {
+          // 中心方块：下陷再弹起
+          const bounce = Math.sin(progress * Math.PI);
+          ripple.tile.userData.animY = -0.3 * bounce;  // 下陷0.3
+          ripple.tile.userData.animScale = 1 - 0.15 * bounce;  // 轻微缩小
+        } else {
+          // 周围方块：向外扩散涟漪
+          const rippleWave = Math.sin(progress * Math.PI) * (1 - progress);
+          const distX = Math.abs(ripple.tile.position.x - ripple.tile.userData.offsetX);
+          const distZ = Math.abs(ripple.tile.position.z - ripple.tile.userData.offsetZ);
+          const dist = Math.sqrt(distX * distX + distZ * distZ);
+
+          // 根据距离调整扩散程度
+          const spreadFactor = Math.max(0, 0.5 - dist * 0.1);
+          ripple.tile.userData.animY = -0.1 * rippleWave;
+          ripple.tile.userData.animScale = 1 - 0.1 * rippleWave * spreadFactor;
+        }
+
+        // 应用动画到实际位置
+        ripple.tile.position.y = ripple.tile.userData.baseY + ripple.tile.userData.animY;
+        ripple.tile.scale.setScalar(ripple.tile.userData.animScale);
+
+        // 动画结束，重置
+        if (progress >= 1) {
+          ripple.tile.userData.animY = 0;
+          ripple.tile.userData.animScale = 1;
+          ripple.tile.position.y = ripple.tile.userData.baseY;
+          ripple.tile.scale.setScalar(1);
+          return false;
+        }
+        return true;
+      });
+    }
+
+    // 创建Segment
+    function createSegment(type, baseZ, arrivalCollision) {
+      const segment = {
+        type: type,
+        baseZ: baseZ,
+        arrivalCollision: arrivalCollision, // 目标碰撞编号
+        tiles: []
+      };
+
+      // 计算X轴方向的偏移位置
+      const halfWidth = ROAD_WIDTH / 2;
+      const tileW = SMALL_WIDTH;
+      // 三块轨道：左、中、右（间隙较大）
+      const positionsX = [
+        -tileW - TILE_GAP_X / 2,        // 左
+        0,                               // 中
+        tileW + TILE_GAP_X / 2          // 右
+      ];
+      // 双块轨道：中间两块（更近）
+      const doublePositionsX = [-DOUBLE_GAP / 2, DOUBLE_GAP / 2];
+
+      if (type === SEGMENT_TYPES.LONG) {
+        // 长直轨道：避免与上一个LONG颜色相同
+        let color;
+        const availableColors = MAIN_COLORS.filter(c => c !== lastLongColor);
+        color = availableColors[Math.floor(Math.random() * availableColors.length)];
+        const tile = createTile(0, 0, ROAD_WIDTH, color);
+        segment.tiles.push(tile);
+        allTiles.push(tile);
+        // 更新颜色
+        lastLongColor = color;
+        currentActiveColor = color;
+        pendingColor = color;
+
+      } else if (type === SEGMENT_TYPES.TRIPLE) {
+        // 三块间隔：必须有一个待生效颜色，其他两块从剩余颜色中随机
+        // 随机打乱位置数组，再分配颜色
+        const availablePositions = [0, 1, 2];
+        const pendingPosIndex = Math.floor(Math.random() * availablePositions.length);
+        const pendingPos = availablePositions.splice(pendingPosIndex, 1)[0]; // pendingColor的随机位置
+        const colors = new Array(3);
+        colors[pendingPos] = pendingColor;
+
+        // 随机分配其他4种颜色到剩余两个位置（可以重复）
+        const otherColors = MAIN_COLORS.filter(c => c !== pendingColor);
+        availablePositions.forEach(pos => {
+          colors[pos] = otherColors[Math.floor(Math.random() * otherColors.length)];
+        });
+
+        colors.forEach((color, i) => {
+          const tile = createTile(positionsX[i], 0, SMALL_WIDTH, color);
+          segment.tiles.push(tile);
+          allTiles.push(tile);
+        });
+
+      } else if (type === SEGMENT_TYPES.DOUBLE) {
+        // 两块间隔：一块用待生效颜色（保证连通性），另一块随机其他颜色
+        const otherColors = MAIN_COLORS.filter(c => c !== pendingColor);
+        const otherColor = otherColors[Math.floor(Math.random() * otherColors.length)];
+
+        doublePositionsX.forEach((posX, idx) => {
+          const color = idx === 0 ? pendingColor : otherColor;
+          const tile = createTile(posX, 0, SMALL_WIDTH, color);
+          segment.tiles.push(tile);
+          allTiles.push(tile);
+        });
+      }
+
+      segments.push(segment);
+
+      // 更新连续类型计数
+      if (type === lastSegmentType) {
+        consecutiveTypeCount++;
+      } else {
+        consecutiveTypeCount = 1;
+        lastSegmentType = type;
+      }
+
+      return segment;
+    }
+
+    // 获取下一个轨道类型（避免连续相同）
+    function getNextSegmentType() {
+      let availableTypes = [SEGMENT_TYPES.TRIPLE, SEGMENT_TYPES.DOUBLE];
+
+      // 如果上一个是LONG，连续两个LONG的概率降低
+      if (lastSegmentType === SEGMENT_TYPES.LONG) {
+        // 30%概率再生成LONG，70%概率生成其他
+        if (Math.random() < 0.3 && consecutiveTypeCount < 2) {
+          return SEGMENT_TYPES.LONG;
+        }
+        // 随机选择TRIPLE或DOUBLE
+        return availableTypes[Math.floor(Math.random() * availableTypes.length)];
+      }
+
+      // 如果连续出现了同类型，增加其他类型的概率
+      if (consecutiveTypeCount >= 2) {
+        // 强制切换到其他类型
+        return lastSegmentType === SEGMENT_TYPES.TRIPLE ? SEGMENT_TYPES.DOUBLE : SEGMENT_TYPES.TRIPLE;
+      }
+
+      // 正常情况：40% LONG，30% TRIPLE，30% DOUBLE
+      const rand = Math.random();
+      if (rand < 0.4) {
+        return SEGMENT_TYPES.LONG;
+      } else if (rand < 0.7) {
+        return SEGMENT_TYPES.TRIPLE;
+      } else {
+        return SEGMENT_TYPES.DOUBLE;
+      }
+    }
+
+    // 初始化轨道：随机分配类型
+    // 使用 arrivalCollision 确保精确对齐
+    // collision N 在 t = N 秒
+    // 轨道位置公式：baseZ = arrivalCollision × SEGMENT_SPACING - VELZ × elapsed
+    // 当 t = N 时，baseZ = arrivalCollision × 10 - 10 × N
+    // 要让 baseZ = 0，需要 arrivalCollision = N
+    // 所以初始 baseZ = arrivalCollision × SEGMENT_SPACING - VELZ × arrivalCollision = 0？不对！
+    //
+    // 重新分析：
+    // - 在 t=0 时，baseZ 应该 = arrivalCollision × 10
+    // - 因为在 t = arrivalCollision 时，baseZ = arrivalCollision × 10 - 10 × arrivalCollision = 0
+    for (let i = 0; i < INIT_SEGMENTS; i++) {
+      const arrivalCollision = i + 1; // 第 1, 2, 3, ... 个碰撞
+      const baseZ = arrivalCollision * SEGMENT_SPACING; // 初始位置
+      // 第一个必须是LONG，确保球的初始颜色匹配
+      const type = i === 0 ? SEGMENT_TYPES.LONG : getNextSegmentType();
+      createSegment(type, baseZ, arrivalCollision);
+    }
+    // 初始化球的颜色为第一个LONG轨道的颜色
+    ballColor = currentActiveColor;
+    pendingColor = currentActiveColor;
+
+    // ── 球体 ─────────────────────────────────────────────
+    const GROUND_Y = 0.7;
+
+    const sphereGeo = new THREE.SphereGeometry(0.8, 128, 128);
+    const sphereMat = new THREE.MeshStandardMaterial({
+      color: 0xffaa44, metalness: 0.2, roughness: 0.25,
+    });
+    const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+    scene.add(sphere);
+
+    // ═══════════════════════════════════════════════════════════════
+    //  粒子爆炸系统
+    // ═══════════════════════════════════════════════════════════════
+    const PARTICLE_COUNT = 80;
+    let particles = null;
+    let particleVelocities = [];
+    let explosionTime = 0;
+    let isExploding = false;
+
+    function createExplosion(x, y, z, color) {
+      // 创建粒子几何体
+      const particleGeo = new THREE.BufferGeometry();
+      const positions = new Float32Array(PARTICLE_COUNT * 3);
+      const sizes = new Float32Array(PARTICLE_COUNT);
+
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        positions[i * 3] = x;
+        positions[i * 3 + 1] = y;
+        positions[i * 3 + 2] = z;
+        sizes[i] = 0.1 + Math.random() * 0.2;
+      }
+
+      particleGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      particleGeo.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+      const particleMat = new THREE.PointsMaterial({
+        color: color,
+        size: 0.15,
+        transparent: true,
+        opacity: 1,
+        sizeAttenuation: true
+      });
+
+      particles = new THREE.Points(particleGeo, particleMat);
+      scene.add(particles);
+
+      // 初始化粒子速度（随机向外爆炸）
+      particleVelocities = [];
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const speed = 3 + Math.random() * 8;
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.random() * Math.PI;
+        particleVelocities.push({
+          x: Math.sin(phi) * Math.cos(theta) * speed,
+          y: Math.sin(phi) * Math.sin(theta) * speed + 2,
+          z: Math.cos(phi) * speed,
+          life: 1.0
+        });
+      }
+
+      isExploding = true;
+      explosionTime = 0;
+    }
+
+    function updateParticles(dt) {
+      if (!isExploding || !particles) return;
+
+      explosionTime += dt;
+
+      const positions = particles.geometry.attributes.position.array;
+      const gravity = -15;
+
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const v = particleVelocities[i];
+        v.y += gravity * dt;
+
+        positions[i * 3] += v.x * dt;
+        positions[i * 3 + 1] += v.y * dt;
+        positions[i * 3 + 2] += v.z * dt;
+
+        // 粒子逐渐消失
+        v.life -= dt * 0.8;
+      }
+
+      particles.geometry.attributes.position.needsUpdate = true;
+      particles.material.opacity = Math.max(0, 1 - explosionTime * 1.2);
+
+      // 爆炸结束，移除粒子
+      if (explosionTime > 1.0) {
+        scene.remove(particles);
+        particles.geometry.dispose();
+        particles.material.dispose();
+        particles = null;
+        particleVelocities = [];
+        isExploding = false;
+      }
+    }
+
+    function triggerGameOver(ballX, ballY, ballZ, ballColor) {
+      // 隐藏球体
+      sphere.visible = false;
+      // 创建爆炸效果
+      createExplosion(ballX, ballY, ballZ, ballColor);
+      // 延迟显示 GameOver
+      setTimeout(() => {
+        document.getElementById('gameover').style.display = 'block';
+        isGameOver = true;
+        pauseMusic();
+      }, 800);
+    }
+
+
+    // ── 星云隧道效果 ─────────────────────────────────────────
+    const NEBULA_COLORS = [
+      0xFFFFFF, 0xFFFFAA, 0xFFD700, 0xFFAA00, // 白色、金色、橙金
+      0xFFE4B5, 0xFFFACD, 0xFFF8DC, 0xFFEFD5, // 浅金色渐变
+      0xFF5BAC, 0x33BBFF, 0xAA44FF            // 保留一些彩虹色
+    ];
+    const NEBULA_SPACING = 10;
+    const NEBULA_LAYERS = 15;
+    const NEBULA_SPEED = 15;
+
+    // 创建星云粒子层 - 圆形光点
+    function createNebulaLayer(zPos, layerIndex) {
+      const particleCount = 40;
+      const geometry = new THREE.BufferGeometry();
+      const positions = new Float32Array(particleCount * 3);
+      const colors = new Float32Array(particleCount * 3);
+      const sizes = new Float32Array(particleCount);
+
+      for (let i = 0; i < particleCount; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const radius = 2 + Math.pow(Math.random(), 0.5) * 22;
+        const spreadZ = (Math.random() - 0.5) * 4;
+
+        positions[i * 3] = Math.cos(angle) * radius;
+        positions[i * 3 + 1] = Math.sin(angle) * radius;
+        positions[i * 3 + 2] = spreadZ;
+
+        const color = new THREE.Color(NEBULA_COLORS[Math.floor(Math.random() * NEBULA_COLORS.length)]);
+        const brightness = 0.6 + Math.random() * 0.4;
+        colors[i * 3] = color.r * brightness;
+        colors[i * 3 + 1] = color.g * brightness;
+        colors[i * 3 + 2] = color.b * brightness;
+
+        sizes[i] = 0.8 + Math.random() * 1.2;
+      }
+
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+      // 使用自定义着色器创建圆形光点
+      const material = new THREE.ShaderMaterial({
+        uniforms: {
+          time: { value: 0 }
+        },
+        vertexShader: `
+          attribute float size;
+          varying vec3 vColor;
+          uniform float time;
+          void main() {
+            vColor = color;
+            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+            gl_PointSize = size * (200.0 / -mvPosition.z);
+            gl_Position = projectionMatrix * mvPosition;
+          }
+        `,
+        fragmentShader: `
+          varying vec3 vColor;
+          void main() {
+            // 创建圆形光点，带发光效果
+            vec2 center = gl_PointCoord - vec2(0.5);
+            float dist = length(center);
+            // 柔和的圆形，带发光边缘
+            float alpha = 1.0 - smoothstep(0.3, 0.5, dist);
+            // 发光核心
+            float glow = 1.0 - smoothstep(0.0, 0.3, dist);
+            vec3 finalColor = vColor * (0.5 + glow * 0.8);
+            gl_FragColor = vec4(finalColor, alpha * 0.9);
+          }
+        `,
+        transparent: true,
+        vertexColors: true,
+        blending: THREE.AdditiveBlending
+      });
+
+      const particles = new THREE.Points(geometry, material);
+      particles.position.z = zPos;
+      particles.userData.layerIndex = layerIndex;
+      particles.userData.pulsePhase = Math.random() * Math.PI * 2;
+      scene.add(particles);
+      return particles;
+    }
+
+    const nebulaLayers = [];
+    for (let i = 0; i < NEBULA_LAYERS; i++) {
+      nebulaLayers.push(createNebulaLayer(i * NEBULA_SPACING, i));
+    }
+
+    // ── 星尘粒子流 ─────────────────────────────────────────
+    const STAR_COLORS = [0xFFFFFF, 0xFFFFAA, 0xFFD700, 0xFFAA00, 0xFFE4B5];
+    const dustCount = 150;
+    const dustGeometry = new THREE.BufferGeometry();
+    const dustPositions = new Float32Array(dustCount * 3);
+    const dustColors = new Float32Array(dustCount * 3);
+
+    for (let i = 0; i < dustCount; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const radius = 2 + Math.random() * 20;
+      dustPositions[i * 3] = Math.cos(angle) * radius;
+      dustPositions[i * 3 + 1] = Math.sin(angle) * radius;
+      dustPositions[i * 3 + 2] = (Math.random() - 0.5) * 200;
+
+      const color = new THREE.Color(STAR_COLORS[Math.floor(Math.random() * STAR_COLORS.length)]);
+      dustColors[i * 3] = color.r;
+      dustColors[i * 3 + 1] = color.g;
+      dustColors[i * 3 + 2] = color.b;
+    }
+
+    dustGeometry.setAttribute('position', new THREE.BufferAttribute(dustPositions, 3));
+    dustGeometry.setAttribute('color', new THREE.BufferAttribute(dustColors, 3));
+
+    // 星尘也用圆形光点着色器
+    const dustMaterial = new THREE.ShaderMaterial({
+      vertexShader: `
+        varying vec3 vColor;
+        void main() {
+          vColor = color;
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = 3.0 * (200.0 / -mvPosition.z);
+          gl_Position = projectionMatrix * mvPosition;
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vColor;
+        void main() {
+          vec2 center = gl_PointCoord - vec2(0.5);
+          float dist = length(center);
+          float alpha = 1.0 - smoothstep(0.3, 0.5, dist);
+          float glow = 1.0 - smoothstep(0.0, 0.3, dist);
+          vec3 finalColor = vColor * (0.6 + glow * 0.6);
+          gl_FragColor = vec4(finalColor, alpha * 0.85);
+        }
+      `,
+      transparent: true,
+      vertexColors: true,
+      blending: THREE.AdditiveBlending
+    });
+
+    const dustParticles = new THREE.Points(dustGeometry, dustMaterial);
+    scene.add(dustParticles);
+
+    // ── 星云背景光效 ──────────────────────────────────────────
+    function createNebulaBackground() {
+      const glowGeometry = new THREE.PlaneGeometry(250, 250);
+      const glowMaterial = new THREE.ShaderMaterial({
+        transparent: true,
+        side: THREE.DoubleSide,
+        uniforms: {
+          time: { value: 0 }
+        },
+        vertexShader: `
+          varying vec2 vUv;
+          void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform float time;
+          varying vec2 vUv;
+
+          // 噪声函数
+          float hash(vec2 p) {
+            return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+          }
+
+          float noise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+            float a = hash(i);
+            float b = hash(i + vec2(1.0, 0.0));
+            float c = hash(i + vec2(0.0, 1.0));
+            float d = hash(i + vec2(1.0, 1.0));
+            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+          }
+
+          float fbm(vec2 p) {
+            float value = 0.0;
+            float amplitude = 0.5;
+            for (int i = 0; i < 5; i++) {
+              value += amplitude * noise(p);
+              p *= 2.0;
+              amplitude *= 0.5;
+            }
+            return value;
+          }
+
+          void main() {
+            vec2 center = vUv - 0.5;
+            float radius = length(center);
+            float angle = atan(center.y, center.x);
+
+            // 星云噪声
+            vec2 noiseCoord = center * 3.0 + time * 0.1;
+            float n = fbm(noiseCoord);
+            n += fbm(noiseCoord * 2.0 + time * 0.15) * 0.5;
+            n += fbm(noiseCoord * 4.0 - time * 0.2) * 0.25;
+
+            // 金色到白色渐变
+            vec3 gold = vec3(1.0, 0.85, 0.4);
+            vec3 white = vec3(1.0, 1.0, 1.0);
+            vec3 brightGold = vec3(1.0, 0.95, 0.7);
+            vec3 warmPink = vec3(1.0, 0.8, 0.9);
+
+            // 多层颜色混合
+            float wave1 = sin(angle * 3.0 + time * 0.3) * 0.5 + 0.5;
+            float wave2 = sin(angle * 5.0 - time * 0.2) * 0.5 + 0.5;
+            float wave3 = sin(radius * 8.0 - time * 0.5) * 0.5 + 0.5;
+
+            vec3 color = mix(gold, white, wave1 * n);
+            color = mix(color, brightGold, wave2 * 0.5);
+            color = mix(color, warmPink, wave3 * 0.3);
+
+            // 星云状衰减
+            float glow = smoothstep(0.5, 0.0, radius);
+            float nebula = pow(glow, 1.5) * (0.5 + n * 0.5);
+
+            // 发光核心
+            float core = smoothstep(0.15, 0.0, radius);
+            color = mix(color, white, core * 0.8);
+
+            // 光芒射线
+            float rays = 0.0;
+            for (int i = 0; i < 8; i++) {
+              float a = float(i) * 0.7854 + time * 0.15;
+              vec2 dir = vec2(cos(a), sin(a));
+              float ray = max(0.0, dot(normalize(center), dir));
+              ray = pow(ray, 15.0);
+              ray *= smoothstep(0.45, 0.1, radius);
+              rays += ray * 0.15;
+            }
+            color += vec3(rays) * mix(gold, white, 0.5);
+
+            // 闪烁星点
+            float sparkle = sin(angle * 30.0 + time * 3.0) * sin(radius * 40.0 - time * 2.0);
+            sparkle = pow(max(0.0, sparkle), 8.0);
+            color += vec3(sparkle * 0.3) * smoothstep(0.3, 0.0, radius);
+
+            gl_FragColor = vec4(color * nebula, nebula * 0.7);
+          }
+        `
+      });
+
+      const glow = new THREE.Mesh(glowGeometry, glowMaterial);
+      glow.position.z = -120;
+      scene.add(glow);
+      return glow;
+    }
+
+    const nebulaBackground = createNebulaBackground();
+
+    function updateTunnel(dt) {
+      const t = clock.getElapsedTime();
+
+      // 更新星云层
+      nebulaLayers.forEach((layer) => {
+        layer.position.z -= NEBULA_SPEED * dt;
+        layer.rotation.z += 0.08 * dt;
+
+        const pulse = Math.sin(t * 1.2 + layer.userData.pulsePhase) * 0.2 + 0.8;
+        layer.material.opacity = pulse;
+
+        // 循环回收
+        if (layer.position.z < -70) {
+          let maxZ = -70;
+          nebulaLayers.forEach(l => {
+            if (l.position.z > maxZ) maxZ = l.position.z;
+          });
+          layer.position.z = maxZ + NEBULA_SPACING;
+          layer.userData.pulsePhase = Math.random() * Math.PI * 2;
+        }
+      });
+
+      // 更新粒子
+      const dustPos = dustParticles.geometry.attributes.position.array;
+      for (let i = 0; i < dustCount; i++) {
+        dustPos[i * 3 + 2] -= NEBULA_SPEED * 0.6 * dt;
+        if (dustPos[i * 3 + 2] < -80) {
+          dustPos[i * 3 + 2] = 150;
+        }
+      }
+      dustParticles.geometry.attributes.position.needsUpdate = true;
+      dustParticles.rotation.z += dt * 0.1;
+
+      // 更新背景
+      nebulaBackground.material.uniforms.time.value = t;
+      nebulaBackground.rotation.z = t * 0.05;
+    }
+
+    // ── Resize ─────────────────────────────────────────────
+    window.addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    // ── 鼠标控制 ──────────────────────────────────────────
+    window.addEventListener('mousemove', (e) => {
+      // 将鼠标X位置归一化到 -1 到 1
+      normalizedMouseX = (e.clientX / window.innerWidth) * 2 - 1;
+    });
+
+    // ── Animate ────────────────────────────────────────────
+    const clock = new THREE.Clock();
+    let prevTime = 0;
+
+    let posY = GROUND_Y;
+    let velY = BOUNCE_VEL;
+    let collisionCount = 0;
+    let nextBounceTime = TOTAL_PERIOD;
+
+    // ── 游戏状态 ─────────────────────────────────────────
+
+    // 重新开始游戏
+    function restartGame() {
+      isGameOver = false;
+      gameStarted = true;
+      ballColor = 0xffaa44;
+      pendingColor = COLOR_PINK;
+      lastSegmentType = 0;
+      consecutiveTypeCount = 0;
+      lastLongColor = 0;
+
+      // 清除所有segments并重新初始化
+      while (segments.length > 0) {
+        const seg = segments.pop();
+        seg.tiles.forEach(tile => {
+          scene.remove(tile);
+          allTiles.splice(allTiles.indexOf(tile), 1);
+        });
+      }
+
+      // 重新生成轨道
+      for (let i = 0; i < INIT_SEGMENTS; i++) {
+        const arrivalCollision = i + 1;
+        const baseZ = arrivalCollision * SEGMENT_SPACING;
+        const type = i === 0 ? SEGMENT_TYPES.LONG : getNextSegmentType();
+        createSegment(type, baseZ, arrivalCollision);
+      }
+
+      // 同步球的颜色与轨道
+      ballColor = currentActiveColor;
+      pendingColor = currentActiveColor;
+
+      // 重置球属性
+      sphere.material.color.setHex(ballColor);
+      sphere.visible = true;
+      posY = GROUND_Y;
+      velY = BOUNCE_VEL;
+      collisionCount = 0;
+      nextBounceTime = TOTAL_PERIOD;
+
+      // 重置时钟
+      clock.start();
+      prevTime = 0;
+
+      // 清除粒子效果
+      if (particles) {
+        scene.remove(particles);
+        particles.geometry.dispose();
+        particles.material.dispose();
+        particles = null;
+        particleVelocities = [];
+        isExploding = false;
+      }
+
+      // 隐藏 GameOver
+      document.getElementById('gameover').style.display = 'none';
+      resumeMusic();
+    }
+
+    // 绑定重新开始按钮
+    document.getElementById('restartBtn').addEventListener('click', restartGame);
+
+    // 更新所有 segment 的位置（带平滑动画）
+    function updateSegments() {
+      const t = clock.getElapsedTime();
+      // 使用连续的时间（带小数），实现平滑移动效果
+      // 当 t=1.0s 时 currentCollision=1.0，segment 到 Z=0
+      // 当 t=1.5s 时 currentCollision=1.5，segment 继续向前移动
+      const currentCollision = t / TOTAL_PERIOD;
+
+      segments.forEach(segment => {
+        // 计算相对位置：相对于当前应该到达的碰撞
+        segment.baseZ = (segment.arrivalCollision - currentCollision) * SEGMENT_SPACING;
+
+        // 更新 tile 位置
+        segment.tiles.forEach(tile => {
+          tile.position.x = tile.userData.offsetX;
+          tile.position.z = segment.baseZ + tile.userData.offsetZ;
+          // 应用基础Y位置和涟漪动画偏移
+          tile.position.y = tile.userData.baseY + tile.userData.animY;
+        });
+
+        // 回收
+        if (segment.baseZ < DESPAWN_Z) {
+          let maxArrival = 0;
+          segments.forEach(s => {
+            if (s.arrivalCollision > maxArrival) maxArrival = s.arrivalCollision;
+          });
+          segment.arrivalCollision = maxArrival + 1;
+        }
+      });
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+
+      // 游戏未开始时只渲染静态画面
+      if (!gameStarted) {
+        renderer.render(scene, camera);
+        return;
+      }
+
+      const t = clock.getElapsedTime();
+      const dt = Math.min(t - prevTime, 0.05);
+      prevTime = t;
+
+      // 游戏结束时暂停渲染并停止更新
+      if (isGameOver) {
+        renderer.render(scene, camera);
+        return;
+      }
+
+      // ── 鼠标控制：X位置平滑插值 ─────────────────────────
+      // 根据鼠标位置计算目标X位置
+      targetPosX = normalizedMouseX * MOUSE_SENSITIVITY;
+      // 当前X位置平滑插值到目标位置
+      sphere.position.x += (targetPosX - sphere.position.x) * POS_X_SMOOTHING;
+
+      // ── 球体弹跳 ────────────────────────────────────────
+      velY += GRAVITY * dt;
+      posY += velY * dt;
+
+      // ── 精确碰撞检测 ─────────────────────────────────────
+      if (t >= nextBounceTime) {
+        posY = GROUND_Y;
+        velY = BOUNCE_VEL;
+        nextBounceTime += TOTAL_PERIOD;
+        collisionCount++;
+
+        // 检查碰撞并校验轨道位置
+        let hitSegment = null;
+        allTiles.forEach(tile => {
+          const tileZ = tile.position.z;
+          const tileHalfLen = ROAD_TILE_LEN / 2;
+          if (tileZ >= -tileHalfLen && tileZ <= tileHalfLen) {
+            // 找出属于哪个 segment
+            segments.forEach(seg => {
+              if (seg.tiles.includes(tile)) {
+                hitSegment = seg;
+              }
+            });
+          }
+        });
+
+        // ── 检测球是否落在某个 tile 上 ────────────────────────
+        let landedOnTile = false;
+        let landedTile = null;
+        let landedSegment = null;
+
+        allTiles.forEach(tile => {
+          const tileZ = tile.position.z;
+          const tileHalfLen = ROAD_TILE_LEN / 2;
+          // 检查 Z 方向是否重叠
+          if (tileZ >= -tileHalfLen && tileZ <= tileHalfLen) {
+            // 检查球是否在 tile 的 X 范围内
+            const tileX = tile.position.x;
+            const tileHalfWidth = tile.userData.width / 2;
+            if (Math.abs(sphere.position.x - tileX) < tileHalfWidth + 0.5) {
+              landedOnTile = true;
+              landedTile = tile;
+              // 找出属于哪个 segment
+              segments.forEach(seg => {
+                if (seg.tiles.includes(tile)) {
+                  landedSegment = seg;
+                }
+              });
+            }
+          }
+        });
+
+        // 如果没有落在任何 tile 上，游戏失败
+        if (!landedOnTile) {
+          triggerGameOver(sphere.position.x, sphere.position.y, sphere.position.z, ballColor);
+          return;
+        } else {
+          // ── 碰到长直轨道时变色 ──────────────────────────────
+          if (landedSegment && landedSegment.type === SEGMENT_TYPES.LONG) {
+            const trackColor = landedSegment.tiles[0].material.color.getHex();
+            sphere.material.color.setHex(trackColor);
+            ballColor = trackColor;
+            // 更新待生效颜色：下一个TRIPLE/DOUBLE将使用这个颜色
+            pendingColor = trackColor;
+          }
+
+          // ── 颜色不匹配检测（TRIPLE / DOUBLE） ────────────────
+          if (landedSegment && (landedSegment.type === SEGMENT_TYPES.TRIPLE || landedSegment.type === SEGMENT_TYPES.DOUBLE)) {
+            // 检查颜色是否匹配
+            const tileColor = landedTile.material.color.getHex();
+            if (ballColor !== tileColor) {
+              // 颜色不匹配！触发爆炸效果
+              triggerGameOver(sphere.position.x, sphere.position.y, sphere.position.z, ballColor);
+              return;
+            }
+          }
+
+          // ── 触发涟漪动画 ─────────────────────────────────────
+          triggerRipple(landedTile, landedSegment);
+        }
+
+        // 如果碰撞时轨道位置偏差太大，修正它的 arrivalCollision
+        if (hitSegment) {
+          const error = hitSegment.baseZ;
+          if (Math.abs(error) > 0.1) {
+            const targetArrival = Math.round(t / TOTAL_PERIOD);
+            hitSegment.arrivalCollision = targetArrival;
+          }
+        }
+      }
+
+      // 更新所有 segment 位置
+      updateSegments();
+
+      sphere.position.y = posY;
+
+      sphere.rotation.y = t * 0.4;
+
+      // ── 更新粒子效果 ─────────────────────────────────────
+      updateParticles(dt);
+
+      // ── 更新方块涟漪动画 ─────────────────────────────────
+      updateRipples(t);
+
+      // ── 更新时空隧道 ──────────────────────────────────────
+      updateTunnel(dt);
+
+      fillLight.intensity = 1.5 + Math.sin(t * 1.5) * 0.3;
+      backLight.intensity = 1.0 + Math.cos(t * 1.2) * 0.2;
+
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>
